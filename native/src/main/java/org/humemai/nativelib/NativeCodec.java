@@ -18,13 +18,16 @@
  */
 package org.humemai.nativelib;
 
+import com.arcadedb.database.BaseRecord;
 import com.arcadedb.database.Binary;
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
-import com.arcadedb.database.RecordInternal;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.LightEdge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -105,12 +108,22 @@ final class NativeCodec {
    * transaction has already changed is serialized (read-only), as its buffer is still the image it was read from.
    */
   static long token(final Document d) {
+    // A record with no stored image of its own has no fingerprint: an embedded document lives inside its parent's image, a light edge is
+    // two pointers with no record of its own, a record not saved yet has no identity. No cast here: ImmutableDocument (what a read gives)
+    // is a BaseRecord and does not implement RecordInternal, which only MutableDocument does, so a (RecordInternal) cast threw a
+    // ClassCastException for every record row read.
+    if (d instanceof EmbeddedDocument || d instanceof LightEdge || d.getIdentity() == null)
+      return 0L;
     final Binary b;
-    if (d instanceof MutableDocument) {
-      final DatabaseInternal db = (DatabaseInternal) d.getDatabase();
-      b = db.getSerializer().serializeDocument(db, d, true);
-    } else
-      b = ((RecordInternal) d).getBuffer();
+    if (d instanceof MutableDocument m) {
+      final Database db = m.getDatabase();
+      if (!(db instanceof DatabaseInternal internal))
+        return 0L;
+      b = internal.getSerializer().serializeDocument(internal, m, true);
+    } else if (d instanceof BaseRecord r)
+      b = r.getBuffer();
+    else
+      return 0L;
     if (b == null)
       return 0L;
     final CRC32C crc = new CRC32C();
