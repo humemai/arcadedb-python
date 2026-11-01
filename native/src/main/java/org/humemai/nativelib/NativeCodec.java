@@ -18,8 +18,12 @@
  */
 package org.humemai.nativelib;
 
+import com.arcadedb.database.Binary;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RecordInternal;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
@@ -39,6 +43,7 @@ import java.util.Date;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.zip.CRC32C;
 
 final class NativeCodec {
   static final int MAX_BATCH_CHARS = 4 * 1024 * 1024;
@@ -48,7 +53,7 @@ final class NativeCodec {
 
   /**
    * Appends {@code "rows":[..],"meta":[..],"drained":b} (no braces) with up to max rows. meta has one entry per row: 0
-   * for a projection, or [rid, typeName, kind] for a record row (kind v, e or d).
+   * for a projection, or [rid, typeName, kind, token] for a record row (kind v, e or d; token: see {@link #token}).
    */
   static boolean appendBatch(final StringBuilder sb, final ResultSet rs, final int max) {
     final StringBuilder meta = new StringBuilder("[");
@@ -92,6 +97,28 @@ final class NativeCodec {
     return drained;
   }
 
+  /**
+   * A fingerprint of the stored image of a record (CRC32C of the bytes the engine holds for it, with their length), 0 when it has none. The
+   * engine keeps no record version: its own check (TransactionContext.checkRecordIsStillTheOneRead) compares the image a MutableDocument was
+   * read from with the stored one. Python keeps this value from the read and hands it back to save, which compares it with the image
+   * stored now (NativeExtras.rec), so a write computed from an older read is refused as the JPype build refuses it. A record the current
+   * transaction has already changed is serialized (read-only), as its buffer is still the image it was read from.
+   */
+  static long token(final Document d) {
+    final Binary b;
+    if (d instanceof MutableDocument) {
+      final DatabaseInternal db = (DatabaseInternal) d.getDatabase();
+      b = db.getSerializer().serializeDocument(db, d, true);
+    } else
+      b = ((RecordInternal) d).getBuffer();
+    if (b == null)
+      return 0L;
+    final CRC32C crc = new CRC32C();
+    final int n = b.size();
+    crc.update(b.getContent(), b.getContentBeginOffset(), n);
+    return ((long) n << 32) | crc.getValue();
+  }
+
   private static void appendRow(final StringBuilder sb, final StringBuilder meta, final Result row) {
     sb.append('{');
     boolean first = true;
@@ -112,7 +139,7 @@ final class NativeCodec {
         quote(meta, d.getIdentity() == null ? "" : d.getIdentity().toString());
         meta.append(',');
         quote(meta, d.getTypeName());
-        meta.append(",\"").append(d instanceof Vertex ? 'v' : d instanceof Edge ? 'e' : 'd').append("\"]");
+        meta.append(",\"").append(d instanceof Vertex ? 'v' : d instanceof Edge ? 'e' : 'd').append("\",").append(token(d)).append(']');
         return;
       }
     }

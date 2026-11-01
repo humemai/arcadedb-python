@@ -11,7 +11,7 @@ from ..exceptions import ArcadeDBError
 from ..graph import Document as _BaseDocument
 from ..graph import Edge as _BaseEdge
 from ..graph import Vertex as _BaseVertex
-from . import needs_jvm
+from . import lib, needs_jvm
 from .codec import RID
 
 _JAVA_OBJECT = None
@@ -38,7 +38,9 @@ class _Mixin:
     _CREATE = "INSERT INTO {t} CONTENT :row"
     _DELETE = "DELETE FROM {rid}"
 
-    def __init__(self, database, type_name, rid=None, props=None, mutable=False):
+    def __init__(
+        self, database, type_name, rid=None, props=None, mutable=False, token=None
+    ):
         self._java_document = _java_object()
         self._database = database
         self._db = database
@@ -46,6 +48,8 @@ class _Mixin:
         self._rid = rid or None
         self._props: Dict[str, Any] = dict(props or {})
         self._mutable = mutable or not rid
+        # fingerprint of the stored image this snapshot was read from (None: not known); save() refuses to overwrite a changed record
+        self._token = token or None
         self._property_names_cache = None
 
     # -- reading
@@ -112,11 +116,47 @@ class _Mixin:
             if row is None and veto_count() != vetoes:
                 return self  # a before_create callback vetoed it: nothing is written, no error (as on the JPype backend)
             self._adopt(row)
+        elif self._token:
+            # the engine keeps no record version: the library compares the stored image with the one this snapshot was read from, in the
+            # transaction of the update, and raises ConcurrentModificationException (nothing written) when another transaction changed it
+            from .extras import _call, _enc
+
+            reply = _call(
+                f"Failed to save a {self._type} record",
+                "arcadedb_n_rec",
+                db._h,
+                lib.b("save"),
+                lib.b(
+                    _enc(
+                        {
+                            "rid": self._rid,
+                            "token": str(self._token),
+                            "row": self._props,
+                        }
+                    )
+                ),
+            )
+            self._token = (
+                int(reply["token"]) or None
+            )  # the version advances with every save
         else:
             db.command(
                 "sql", f"UPDATE {self._rid} MERGE :row", {"row": self._props}
             ).close()
         return self
+
+    def _stored_token(self) -> Optional[int]:
+        """The fingerprint of the record as stored now (one crossing), for a record that was born without one."""
+        from .extras import _call, _enc
+
+        reply = _call(
+            f"Failed to read a {self._type} record",
+            "arcadedb_n_rec",
+            self._db._h,
+            lib.b("token"),
+            lib.b(_enc({"rid": self._rid})),
+        )
+        return int(reply["token"]) or None
 
     def _adopt(self, row) -> None:
         if row is None or not row.get_rid():
@@ -125,6 +165,8 @@ class _Mixin:
             )
         self._rid = row.get_rid()
         self._props = row.to_dict()
+        meta = row._meta
+        self._token = (meta[3] if meta and len(meta) > 3 else None) or None
 
     def delete(self):
         if self._rid is None:
@@ -133,7 +175,17 @@ class _Mixin:
 
     def modify(self):
         self._check_open()
-        return type(self)(self._db, self._type, self._rid, self._props, mutable=True)
+        if self._rid and self._token is None:
+            # born without a fingerprint (a record a vector search or a callback delivered): taken now, which is the latest read it can have
+            self._token = self._stored_token()
+        return type(self)(
+            self._db,
+            self._type,
+            self._rid,
+            self._props,
+            mutable=True,
+            token=self._token,
+        )
 
     def __repr__(self) -> str:
         return f"<{type(self).__name__} rid={self.get_rid()} type={self._type}>"
@@ -203,8 +255,11 @@ def _wrap(database, row):
     meta = row._meta
     if not meta:
         return None
-    rid, type_name, kind = meta
-    return _CLASS_OF.get(kind, Document)(database, type_name, rid, row._props)
+    rid, type_name, kind = meta[:3]
+    token = meta[3] if len(meta) > 3 else None
+    return _CLASS_OF.get(kind, Document)(
+        database, type_name, rid, row._props, token=token
+    )
 
 
 def _wrap_dict(database, record: dict, kind: str = "d"):

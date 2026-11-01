@@ -141,7 +141,7 @@ class NativeResult:
                     value.toordinal() - _EPOCH_DAY_ORDINAL
                 )  # as the engine writes a DATE property: days since the epoch
         if self._meta:
-            rid, type_name, kind = self._meta
+            rid, type_name, kind = self._meta[:3]
             out = dict(out)
             out["@cat"] = kind
             out["@type"] = type_name

@@ -35,7 +35,9 @@ import com.arcadedb.event.AfterRecordUpdateListener;
 import com.arcadedb.event.BeforeRecordCreateListener;
 import com.arcadedb.event.BeforeRecordDeleteListener;
 import com.arcadedb.event.BeforeRecordUpdateListener;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.function.CypherBuiltinFunctions;
 import com.arcadedb.function.CypherFunctionRegistry;
 import com.arcadedb.function.FunctionRegistry;
@@ -305,6 +307,63 @@ public final class NativeExtras {
           replyRows(cursor.hasNext() ? new InternalResultSet(new ResultInternal(cursor.next())) : new InternalResultSet()));
     } catch (final Throwable t) {
       return ArcadeNative.err(t);
+    }
+  }
+
+  // ---- record writes that must not overwrite a newer record
+
+  /**
+   * ops: token {rid} | save {rid, token, row}. The engine keeps no record version: a MutableDocument is refused at save when the stored image
+   * is no longer the one it was read from. A native record is a Python snapshot written back with UPDATE .. MERGE, so Python keeps the
+   * fingerprint of the stored image from its read (NativeCodec.token, the 4th member of a row's meta) and save compares it with the image
+   * stored now, in the same transaction as the update, and raises the engine's ConcurrentModificationException when they differ (the
+   * record is left unchanged). token reads the fingerprint of the record as stored now, for a record Python holds without one.
+   * Both reply {"ok":true,"token":"<fingerprint of the stored image after the write>"} (a decimal text: it is a 64-bit value; "0" is none).
+   */
+  @SuppressWarnings("unchecked")
+  @CEntryPoint(name = "arcadedb_n_rec")
+  public static CCharPointer rec(final IsolateThread thread, final long dbh, final CCharPointer op, final CCharPointer argsJson) {
+    try {
+      final Database db = ArcadeNative.db(dbh);
+      final Map<String, Object> a = args(argsJson);
+      final RID rid = new RID((String) a.get("rid"));
+      final String name = ArcadeNative.str(op);
+      if ("token".equals(name))
+        return ArcadeNative.out("{\"ok\":true,\"token\":\"" + storedToken(db, rid) + "\"}");
+      if (!"save".equals(name))
+        throw new IllegalArgumentException("unknown record op '" + name + "'");
+      final long expected = Long.parseLong((String) a.get("token"));
+      final boolean own = !db.isTransactionActive();
+      if (own)
+        db.begin();
+      try {
+        final long stored = storedToken(db, rid);
+        if (stored != 0L && stored != expected)
+          throw new ConcurrentModificationException(
+              "Record " + rid + " was modified by a concurrent transaction after it was read. Please retry the operation");
+        final Map<String, Object> named = new HashMap<>();
+        named.put("row", a.get("row"));
+        db.command("sql", "UPDATE " + rid + " MERGE :row", named).close();
+        final long after = storedToken(db, rid);
+        if (own)
+          db.commit();
+        return ArcadeNative.out("{\"ok\":true,\"token\":\"" + after + "\"}");
+      } catch (final Throwable t) {
+        if (own && db.isTransactionActive())
+          db.rollback();
+        throw t;
+      }
+    } catch (final Throwable t) {
+      return ArcadeNative.err(t);
+    }
+  }
+
+  /** The fingerprint of the record as this transaction sees it, 0 when the record does not exist or has no stored image. */
+  private static long storedToken(final Database db, final RID rid) {
+    try {
+      return db.lookupByRID(rid, true) instanceof Document d ? NativeCodec.token(d) : 0L;
+    } catch (final RecordNotFoundException e) {
+      return 0L;
     }
   }
 
