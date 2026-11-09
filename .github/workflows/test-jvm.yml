@@ -254,6 +254,21 @@ jobs:
         run: |
           matrix="$(python3 scripts/select_matrix.py jvm --event "$EVENT_NAME")"
           wheel_matrix="$(python3 scripts/select_matrix.py jvm --event "$EVENT_NAME" --wheels)"
+          # FORK-ONLY TRIM (integration/post1-candidate-lite, evidence run on humemai/arcadedb-python): keep linux/amd64 on 3.11 and 3.14,
+          # linux/arm64 and windows/amd64 on 3.14, and the wheels of those platforms. The full matrix runs on ArcadeData at the release tag.
+          trimmed="$(python3 -I - "$matrix" "$wheel_matrix" <<'PY'
+          import json, sys
+          keep = {("linux/amd64", "3.11"), ("linux/amd64", "3.14"), ("linux/arm64", "3.14"), ("windows/amd64", "3.14")}
+          matrix = json.loads(sys.argv[1])
+          wheels = json.loads(sys.argv[2])
+          matrix["include"] = [x for x in matrix["include"] if (x["platform"], x["python-version"]) in keep]
+          wheels["include"] = [x for x in wheels["include"] if x["platform"] != "darwin/arm64"]
+          print(json.dumps(matrix, separators=(",", ":")))
+          print(json.dumps(wheels, separators=(",", ":")))
+          PY
+          )"
+          matrix="$(printf '%s\n' "$trimmed" | sed -n 1p)"
+          wheel_matrix="$(printf '%s\n' "$trimmed" | sed -n 2p)"
           echo "$matrix"
           echo "$wheel_matrix"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"

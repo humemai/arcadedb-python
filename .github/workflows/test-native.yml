@@ -171,7 +171,24 @@ jobs:
             fi
           fi
           echo "run=$run" >> "$GITHUB_OUTPUT"
-          python3 -I scripts/select_native_matrix.py "$event" >> "$GITHUB_OUTPUT"
+          # FORK-ONLY TRIM (integration/post1-candidate-lite, evidence run on humemai/arcadedb-python): build linux-x86_64, linux-aarch64 and
+          # windows-x64 (no macOS); test linux-x86_64 on 3.12 and 3.14, linux-aarch64 and windows-x64 on 3.14; no examples legs (the pyver
+          # legs stay). The full matrix (macOS, all Pythons, examples) runs on ArcadeData at the release tag.
+          python3 -I scripts/select_native_matrix.py "$event" > "$RUNNER_TEMP/legs.txt"
+          python3 -I - "$RUNNER_TEMP/legs.txt" >> "$GITHUB_OUTPUT" <<'PY'
+          import json, sys
+          keep_build = {"linux-x86_64", "linux-aarch64", "windows-x64"}
+          keep_test = {("linux-x86_64", "3.12"), ("linux-x86_64", "3.14"), ("linux-aarch64", "3.14"), ("windows-x64", "3.14")}
+          for line in open(sys.argv[1], encoding="utf-8").read().splitlines():
+              key, sep, value = line.partition("=")
+              if sep and key == "build":
+                  value = json.dumps([x for x in json.loads(value) if x["key"] in keep_build], separators=(",", ":"))
+              elif sep and key == "test":
+                  value = json.dumps([x for x in json.loads(value) if (x["key"], x["python"]) in keep_test], separators=(",", ":"))
+              elif sep and key == "examples":
+                  value = "[]"
+              print(key + sep + value)
+          PY
 
   build:
     name: Image and wheel (${{ matrix.key }})
@@ -630,7 +647,8 @@ jobs:
     name: Examples on the installed wheel (${{ matrix.key }}, Python ${{ matrix.python }})
     needs: [plan, build]
     # A platform whose build failed has no wheel to download and shows red here; the other platforms still run.
-    if: ${{ !cancelled() && needs.plan.outputs.run == 'true' }}
+    # (fork-only trim: skipped when the plan has no examples legs)
+    if: ${{ !cancelled() && needs.plan.outputs.run == 'true' && needs.plan.outputs.examples != '[]' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 240
     defaults:
@@ -818,7 +836,8 @@ jobs:
   examples-summary:
     name: Examples summary
     needs: [plan, examples]
-    if: ${{ always() && needs.plan.outputs.run == 'true' }}
+    # (fork-only trim: skipped when the plan has no examples legs)
+    if: ${{ always() && needs.plan.outputs.run == 'true' && needs.plan.outputs.examples != '[]' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
