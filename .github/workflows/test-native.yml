@@ -196,6 +196,12 @@ jobs:
       KEY: ${{ matrix.key }}
       KIND: ${{ matrix.kind }}
     steps:
+      # replicate builds only (never on post4/integration): which machine the build ran on, for the build-draw comparison
+      - name: Machine of this runner
+        run: |
+          echo "runner: os=$RUNNER_OS arch=$RUNNER_ARCH name=$RUNNER_NAME image=${ImageOS:-} version=${ImageVersion:-}"
+          (lscpu 2>/dev/null | grep -E 'Model name|Vendor ID|^CPU\(s\)|Thread|Core|Socket|CPU max MHz|L2 cache|L3 cache') || sysctl -n machdep.cpu.brand_string 2>/dev/null || true
+          (grep -m1 'model name' /proc/cpuinfo 2>/dev/null; nproc 2>/dev/null; free -g 2>/dev/null | head -n 2) || true
       # Windows checks scripts out with CRLF by default, which breaks bash and mvnw: keep LF everywhere.
       - name: Keep LF line endings
         run: |
