@@ -33,7 +33,7 @@ PLATFORMS: dict[str, dict] = {
         "graalvm_sha256": "05ccbbe783210b6886ff7b08fcd0b061c5dce4852b05db87284fc0e24abb08e2",
         "plat_re": "manylinux_2_28_x86_64",
         "xmx": "12g",
-        "ni_extra": "",
+        "ni_extra": "--parallelism=1",
         "macos_target": "",
         "build_minutes": 150,
         "test_minutes": 120,

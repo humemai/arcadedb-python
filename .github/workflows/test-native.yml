@@ -177,7 +177,8 @@ jobs:
             fi
           fi
           echo "run=$run" >> "$GITHUB_OUTPUT"
-          python3 -I scripts/select_native_matrix.py "$event" >> "$GITHUB_OUTPUT"
+          # parallelism experiment (replicate branches p1 only): one platform leg, linux-x86_64, as a pull request run selects it
+          python3 -I scripts/select_native_matrix.py pull_request >> "$GITHUB_OUTPUT"
 
   build:
     name: Image and wheel (${{ matrix.key }})
