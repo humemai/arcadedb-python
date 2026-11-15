@@ -92,6 +92,11 @@ on:
         required: false
         default: ""
         type: string
+      release:
+        description: "The release legs: all four platforms and Python 3.11 to 3.14 (otherwise the small dispatch legs); nothing is published by this workflow"
+        required: false
+        default: false
+        type: boolean
 
 # The group names the workflow literally: github.workflow is the CALLER's name in a workflow_call, and the group of release-native.yml
 # must differ from this one or the two would wait for each other.
